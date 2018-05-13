@@ -130,7 +130,7 @@ def get_vgg_rcnn_test(num_classes=config.NUM_CLASSES):
 
     # shared convolutional layer
     relu5_3 = get_vgg_conv(data)
-    
+
     # Fast R-CNN
     pool5 = mx.symbol.ROIPooling(
         name='roi_pool5', data=relu5_3, rois=rois, pooled_size=(7, 7), spatial_scale=1.0 / config.RCNN_FEAT_STRIDE)
@@ -224,6 +224,8 @@ def get_vgg_rpn_test(num_anchors=config.NUM_ANCHORS):
         data=rpn_cls_score_reshape, mode="channel", name="rpn_cls_prob")
     rpn_cls_prob_reshape = mx.symbol.Reshape(
         data=rpn_cls_prob, shape=(0, 2 * num_anchors, -1, 0), name='rpn_cls_prob_reshape')
+    # RPN proposal
+    # config.TRAIN.CXX_PROPOSAL = True
     if config.TEST.CXX_PROPOSAL:
         group = mx.contrib.symbol.Proposal(
             cls_prob=rpn_cls_prob_reshape, bbox_pred=rpn_bbox_pred, im_info=im_info, name='rois', output_score=True,
@@ -309,6 +311,7 @@ def get_vgg_test(num_classes=config.NUM_CLASSES, num_anchors=config.NUM_ANCHORS)
     bbox_pred = mx.symbol.Reshape(data=bbox_pred, shape=(config.TEST.BATCH_IMAGES, -1, 4 * num_classes), name='bbox_pred_reshape')
 
     # group output
+    # mx.symbol.Group Creates a symbol that contains a collection of other symbols, grouped together.
     group = mx.symbol.Group([rois, cls_prob, bbox_pred])
     return group
 

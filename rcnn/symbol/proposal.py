@@ -2,7 +2,18 @@
 Proposal Operator transform anchor coordinates into ROI coordinates with prediction results on
 classification probability and bounding box prediction results, and image size and scale information.
 """
+"""
+RPN 生成 RoIs
+RPN 在自身训练的同时，还会提供 RoIs（region of interests）给 Fast RCNN（RoIHead）作为训练样本。RPN 生成 RoIs 的过程如下：
+    1.对于每张图片，利用它的 feature map， 计算 (H/16)× (W/16)×9（大概 20000）个 anchor 属于前景的概率，以及对应的位置参数。
+    2.选取概率较大的 12000 个 anchor
+    3.利用回归的位置参数，修正这 12000 个 anchor 的位置，得到 RoIs
+    4.利用非极大值（(Non-maximum suppression, NMS）抑制，选出概率最大的 2000 个 RoIs
+    注意：在 inference 的时候，为了提高处理速度，12000 和 2000 分别变为 6000 和 300.
+    注意：这部分的操作不需要进行反向传播，因此可以利用 numpy/tensor 实现。
 
+RPN 的输出：RoIs（形如 2000×4 或者 300×4 的 tensor）
+"""
 import mxnet as mx
 import numpy as np
 import numpy.random as npr
@@ -21,6 +32,7 @@ class ProposalOperator(mx.operator.CustomOp):
         self._feat_stride = feat_stride
         self._scales = np.fromstring(scales[1:-1], dtype=float, sep=',')
         self._ratios = np.fromstring(ratios[1:-1], dtype=float, sep=',')
+        # 对应一个卷积的K(9)个框, (左上坐标,右下坐标)
         self._anchors = generate_anchors(base_size=self._feat_stride, scales=self._scales, ratios=self._ratios)
         self._num_anchors = self._anchors.shape[0]
         self._output_score = output_score
@@ -33,6 +45,14 @@ class ProposalOperator(mx.operator.CustomOp):
         logger.debug('anchors:\n%s' % self._anchors)
 
     def forward(self, is_train, req, in_data, out_data, aux):
+        """Implements forward computation.
+
+        is_train : bool, whether forwarding for training or testing.
+        req : list of {'null', 'write', 'inplace', 'add'}, how to assign to out_data. 'null' means skip assignment, etc.
+        in_data : list of NDArray, input data.
+        out_data : list of NDArray, pre-allocated output buffers.
+        aux : list of NDArray, mutable auxiliary states. Usually not used.
+        """
         nms = gpu_nms_wrapper(self._threshold, in_data[0].context.device_id)
 
         batch_size = in_data[0].shape[0]
@@ -49,6 +69,17 @@ class ProposalOperator(mx.operator.CustomOp):
         # apply NMS with threshold 0.7 to remaining proposals
         # take after_nms_topN proposals after NMS
         # return the top proposals (-> RoIs top, scores top)
+
+        # 对（H,W）大小的特征图上的每一点i：
+        #      以 i 为中心生成A个锚定框
+        #      利用回归的位置参数，修正这 A 个 anchor 的位置，得到 RoIs
+        # 将预测的边界框裁剪成图像
+        # 清除掉预测边界框中长或宽 小于阈值的
+        # 按分数降序排列(proposal,score)
+        # 在采用NMS取前N个预测边界框
+        # 使用阈值0.7对这N个框使用非极大值抑制
+        # 取使用NMS后前n个预测边界框
+        # 返回前Top n 个的边界框，进行分类和回归
 
         pre_nms_topN = self._rpn_pre_nms_top_n
         post_nms_topN = self._rpn_post_nms_top_n
@@ -70,20 +101,26 @@ class ProposalOperator(mx.operator.CustomOp):
         logger.debug('resudial: (%d, %d)' % (scores.shape[2] - height, scores.shape[3] - width))
 
         # Enumerate all shifts
+        # 这块的思路是生成一系列的shift, 然后每一个shift和9个anchor相加,迭代出每一个位置的9个框
         shift_x = np.arange(0, width) * self._feat_stride
         shift_y = np.arange(0, height) * self._feat_stride
-        shift_x, shift_y = np.meshgrid(shift_x, shift_y)
+        shift_x, shift_y = np.meshgrid(shift_x, shift_y)#产生一个以向量x为行，向量y为列的矩阵
+        #经过meshgrid shift_x = [[  0  16  32 ..., 560 576 592] [  0  16  32 ..., 560 576 592] [  0  16  32 ..., 560 576 592] ..., [  0  16  32 ..., 560 576 592] [  0  16  32 ..., 560 576 592] [  0  16  32 ..., 560 576 592]]
+        #shift_y = [[  0   0   0 ...,   0   0   0] [ 16  16  16 ...,  16  16  16] [ 32  32  32 ...,  32  32  32]  ..., [560 560 560 ..., 560 560 560] [576 576 576 ..., 576 576 576] [592 592 592 ..., 592 592 592]]
+
         shifts = np.vstack((shift_x.ravel(), shift_y.ravel(), shift_x.ravel(), shift_y.ravel())).transpose()
 
         # Enumerate all shifted anchors:
-        #
+        # 转至之后形成所有位移
         # add A anchors (1, A, 4) to
         # cell K shifts (K, 1, 4) to get
         # shift anchors (K, A, 4)
         # reshape to (K*A, 4) shifted anchors
         A = self._num_anchors
         K = shifts.shape[0]
+        # _anchors中每一个anchor和每一个shift相加得出结果
         anchors = self._anchors.reshape((1, A, 4)) + shifts.reshape((1, K, 4)).transpose((1, 0, 2))
+        # K个位移,每个位移A个框
         anchors = anchors.reshape((K * A, 4))
 
         # Transpose and reshape predicted bbox transformations to get them
@@ -105,19 +142,24 @@ class ProposalOperator(mx.operator.CustomOp):
         scores = scores.transpose((0, 2, 3, 1)).reshape((-1, 1))
 
         # Convert anchors into proposals via bbox transformations
+        # 根据回归的偏移量修正位置
         proposals = bbox_pred(anchors, bbox_deltas)
 
         # 2. clip predicted boxes to image
+        # 裁剪掉边框超出图片边界的部分
         proposals = clip_boxes(proposals, im_info[:2])
 
         # 3. remove predicted boxes with either height or width < threshold
         # (NOTE: convert min_size to input image scale stored in im_info[2])
+        # 清除掉预测边界框中长或宽 小于阈值的
         keep = self._filter_boxes(proposals, min_size * im_info[2])
         proposals = proposals[keep, :]
         scores = scores[keep]
 
         # 4. sort all (proposal, score) pairs by score from highest to lowest
         # 5. take top pre_nms_topN (e.g. 6000)
+        # 按分数降序排列，并取前N个(proposal, score)
+
         order = scores.ravel().argsort()[::-1]
         if pre_nms_topN > 0:
             order = order[:pre_nms_topN]
@@ -132,6 +174,7 @@ class ProposalOperator(mx.operator.CustomOp):
         if post_nms_topN > 0:
             keep = keep[:post_nms_topN]
         # pad to ensure output size remains unchanged
+        # 如果不够，就随机选择不足的个数来填充
         if len(keep) < post_nms_topN:
             pad = npr.choice(keep, size=post_nms_topN - len(keep))
             keep = np.hstack((keep, pad))
@@ -139,9 +182,11 @@ class ProposalOperator(mx.operator.CustomOp):
         scores = scores[keep]
 
         # Output rois array
+        # 输出ROIS，送给fast-rcnn训练
         # Our RPN implementation only supports a single input image, so all
         # batch inds are 0
         batch_inds = np.zeros((proposals.shape[0], 1), dtype=np.float32)
+        # 形成五元组(0,x1,y1,x2,y2)
         blob = np.hstack((batch_inds, proposals.astype(np.float32, copy=False)))
         self.assign(out_data[0], req[0], blob)
 
@@ -177,7 +222,7 @@ class ProposalOperator(mx.operator.CustomOp):
 
         return tensor
 
-
+# 注册定义的proposal操作符
 @mx.operator.register("proposal")
 class ProposalProp(mx.operator.CustomOpProp):
     def __init__(self, feat_stride='16', scales='(8, 16, 32)', ratios='(0.5, 1, 2)', output_score='False',
@@ -202,6 +247,11 @@ class ProposalProp(mx.operator.CustomOpProp):
             return ['output']
 
     def infer_shape(self, in_shape):
+        """Calculate output shapes from input shapes. This can be
+        omited if all your inputs and outputs have the same shape.
+
+        in_shapes : list of shape. Shape is described by a tuple of int.
+        """
         cls_prob_shape = in_shape[0]
         bbox_pred_shape = in_shape[1]
         assert cls_prob_shape[0] == bbox_pred_shape[0], 'ROI number does not equal in cls and reg'

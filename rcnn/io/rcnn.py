@@ -121,17 +121,25 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes,
     :param gt_boxes: optional for e2e [n, 5] (x1, y1, x2, y2, cls)
     :return: (labels, rois, bbox_targets, bbox_weights)
     """
+    # 对于每一个 ground truth bounding box (gt_bbox)，选择和它重叠度（IoU）最高的一个 roi 作为作为其样本
     if labels is None:
         overlaps = bbox_overlaps(rois[:, 1:].astype(np.float), gt_boxes[:, :4].astype(np.float))
+        # 返回每一行最大元素，即每一个Rois对应的重叠度最高的gt_box的索引
         gt_assignment = overlaps.argmax(axis=1)
+        # 返回每一个rois对应的最大重叠度
         overlaps = overlaps.max(axis=1)
         labels = gt_boxes[gt_assignment, 4]
-
+    # rcnn rois sampling params
+    # config.TRAIN.FG_FRACTION = 0.25
+    # config.TRAIN.FG_THRESH = 0.5
+    # config.TRAIN.BG_THRESH_HI = 0.5
+    # config.TRAIN.BG_THRESH_LO = 0.0
     # foreground RoI with FG_THRESH overlap
     fg_indexes = np.where(overlaps >= config.TRAIN.FG_THRESH)[0]
     # guard against the case when an image has fewer than fg_rois_per_image foreground RoIs
     fg_rois_per_this_image = np.minimum(fg_rois_per_image, fg_indexes.size)
     # Sample foreground regions without replacement
+    # 随机选取
     if len(fg_indexes) > fg_rois_per_this_image:
         fg_indexes = npr.choice(fg_indexes, size=fg_rois_per_this_image, replace=False)
 
@@ -145,7 +153,9 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes,
         bg_indexes = npr.choice(bg_indexes, size=bg_rois_per_this_image, replace=False)
 
     # indexes selected
+    # 数组拼接
     keep_indexes = np.append(fg_indexes, bg_indexes)
+    # 选取小于阈值的为负样本，即bg_rois
     neg_idx = np.where(overlaps < config.TRAIN.FG_THRESH)[0]
     neg_rois = rois[neg_idx]
     # pad more to ensure a fixed minibatch size
@@ -164,12 +174,13 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes,
     if bbox_targets is not None:
         bbox_target_data = bbox_targets[keep_indexes, :]
     else:
+        # 计算边界框回归，即rois和gt的位移偏移量
         targets = bbox_transform(rois[:, 1:], gt_boxes[gt_assignment[keep_indexes], :4])
         if config.TRAIN.BBOX_NORMALIZATION_PRECOMPUTED:
             targets = ((targets - np.array(config.TRAIN.BBOX_MEANS))
                        / np.array(config.TRAIN.BBOX_STDS))
         bbox_target_data = np.hstack((labels[:, np.newaxis], targets))
-
+    # expand from 5 to 4 * num_classes; only the right class has non-zero bbox regression targets
     bbox_targets, bbox_weights = \
         expand_bbox_regression_targets(bbox_target_data, num_classes)
 

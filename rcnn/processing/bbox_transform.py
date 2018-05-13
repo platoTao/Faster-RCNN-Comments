@@ -115,7 +115,7 @@ def nonlinear_pred(boxes, box_deltas):
     pred_h = np.exp(dh) * heights[:, np.newaxis]
 
     pred_boxes = np.zeros(box_deltas.shape)
-    # 再变化，计算左下角和右上角坐标
+    # 再变化，计算(左上坐标,右下坐标)
     # 取出每个box的 x，shape = （n,1）
     # x1
     pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * (pred_w - 1.0)

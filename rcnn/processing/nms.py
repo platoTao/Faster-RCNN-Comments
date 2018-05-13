@@ -50,6 +50,7 @@ def nms(dets, thresh):
     order = scores.argsort()[::-1]
 
     keep = []
+    # 依次选取最高得分的边界框，排除与它重叠超过阈值的边界框
     while order.size > 0:
         i = order[0]
         keep.append(i)
@@ -63,7 +64,7 @@ def nms(dets, thresh):
         inter = w * h
         # 计算IoU,两个的交集除以两个的并集
         ovr = inter / (areas[i] + areas[order[1:]] - inter)
-        # 返回 IoU 小于 thresh 的 索引集合
+        # 与目前最高得分的边界框重叠超过阈值的被丢弃
         inds = np.where(ovr <= thresh)[0]
         # 这里为什么所有索引 +1 ？
         order = order[inds + 1]

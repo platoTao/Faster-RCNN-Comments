@@ -123,6 +123,10 @@ def expand_bbox_regression_targets(bbox_targets_data, num_classes):
         start = int(4 * cls)
         end = start + 4
         bbox_targets[index, start:end] = bbox_targets_data[index, 1:]
+        # rpn bounding box regression params
+        # config.TRAIN.RPN_BBOX_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
+        # config.TRAIN.RPN_POSITIVE_WEIGHT = -1.0
+        # 私以为这个参数，是排除背景参与回归
         bbox_weights[index, start:end] = config.TRAIN.BBOX_WEIGHTS
     return bbox_targets, bbox_weights
 

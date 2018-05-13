@@ -1,7 +1,13 @@
 """
 Proposal Target Operator selects foreground and background roi and assigns label, bbox_transform to them.
 """
+"""
+RPN 会产生大约 2000 个 RoIs，这 2000 个 RoIs 不是都拿去训练，而是利用Proposal_Target 选择 128 个 RoIs 用以训练。选择的规则如下：
 
+RoIs 和 gt_bboxes 的 IoU 大于 0.5 的，选择一些（比如 36 个）
+
+选择 RoIs 和 gt_bboxes 的 IoU 小于等于 0（或者 0.1）的选择一些（比如 128-32=96 个）作为负样本
+"""
 import logging
 import mxnet as mx
 import numpy as np
@@ -10,7 +16,7 @@ from distutils.util import strtobool
 from ..logger import logger
 from rcnn.io.rcnn import sample_rois
 
-
+# batch_images=2, batch_rois=128, fg_fraction=0.25
 class ProposalTargetOperator(mx.operator.CustomOp):
     def __init__(self, num_classes, batch_images, batch_rois, fg_fraction):
         super(ProposalTargetOperator, self).__init__()
@@ -27,10 +33,14 @@ class ProposalTargetOperator(mx.operator.CustomOp):
     def forward(self, is_train, req, in_data, out_data, aux):
         assert self._batch_rois % self._batch_images == 0, \
             'BATCHIMAGES {} must devide BATCH_ROIS {}'.format(self._batch_images, self._batch_rois)
+        # 每张图片多少个 rois，论文中是64
         rois_per_image = self._batch_rois / self._batch_images
+        # 每张图片的前景(正样本)数量 128*0.25 = 36
         fg_rois_per_image = np.round(self._fg_fraction * rois_per_image).astype(int)
 
+        # 所有 rois
         all_rois = in_data[0].asnumpy()
+        # GT boxes (x1, y1, x2, y2, label)
         gt_boxes = in_data[1].asnumpy()
 
         # Include ground-truth boxes in the set of candidate rois
@@ -39,6 +49,7 @@ class ProposalTargetOperator(mx.operator.CustomOp):
         # Sanity check: single batch only
         assert np.all(all_rois[:, 0] == 0), 'Only single item batches are supported'
 
+        # generate random sample of ROIs comprising foreground and background examples
         rois, labels, bbox_targets, bbox_weights = \
             sample_rois(all_rois, fg_rois_per_image, rois_per_image, self._num_classes, gt_boxes=gt_boxes)
 
