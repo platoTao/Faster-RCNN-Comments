@@ -119,6 +119,7 @@ def expand_bbox_regression_targets(bbox_targets_data, num_classes):
     # 排除 类别为背景的box
     indexes = np.where(classes > 0)[0]
     for index in indexes:
+        # 类别数
         cls = classes[index]
         start = int(4 * cls)
         end = start + 4
@@ -126,7 +127,7 @@ def expand_bbox_regression_targets(bbox_targets_data, num_classes):
         # rpn bounding box regression params
         # config.TRAIN.RPN_BBOX_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
         # config.TRAIN.RPN_POSITIVE_WEIGHT = -1.0
-        # 私以为这个参数，是排除背景参与回归
+        # only the right class has non-zero bbox regression targets 排除 类别为背景的box
         bbox_weights[index, start:end] = config.TRAIN.BBOX_WEIGHTS
     return bbox_targets, bbox_weights
 
